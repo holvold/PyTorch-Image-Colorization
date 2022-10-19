@@ -41,6 +41,7 @@ class ImageDataset(Dataset):
         self.imgs,self.l = self.clear_black_white(self.imgs)
         print(len(self.imgs),len(self.l))
 
+        self.l = np.load(os.path.join(root,"l/gray_scale.npy"))
     def __getitem__(self, index):
 
         img_x = self.imgs[index % len(self.imgs)]
