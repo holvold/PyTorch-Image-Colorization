@@ -117,9 +117,10 @@ class CocoDataset(Dataset):
         #print("tensor.img_lab.shape:",img_lab.shape)
         #save_image(img_rgb, "images/%s/%s.png" % ('test','testlab'))
         L = img_lab[[0], ...] / 50. - 1. # Between -1 and 1
-        ab = img_lab[[1, 2], ...] / 110. # Between -1 and 1
+        a = img_lab[[1], ...] / 110. # Between -1 and 1
+        b = img_lab[[2], ...] / 110.
         
-        return {'L': L, 'ab': ab}
+        return {'L': L, 'a': a ,'b':b}
 
     def __len__(self):
         return len(self.paths)

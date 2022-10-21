@@ -30,8 +30,8 @@ from matplotlib import pyplot as plt
 parser = argparse.ArgumentParser()
 parser.add_argument("--epoch", type=int, default=0, help="epoch to start training from")
 parser.add_argument("--n_epochs", type=int, default=100, help="number of epochs of training")
-parser.add_argument("--dataset_name", type=str, default="improved_2", help="name of the dataset")
-parser.add_argument("--batch_size", type=int, default=32, help="size of the batches")
+parser.add_argument("--dataset_name", type=str, default="improved_4", help="name of the dataset")
+parser.add_argument("--batch_size", type=int, default=16, help="size of the batches")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
@@ -68,30 +68,39 @@ patch = (1,30,30)
 # Initialize generator and discriminator
 #generator = GeneratorUNet()
 #discriminator = Discriminator()
-generator = Generator()
-discriminator = Discriminator()
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-print("\nParams:", count_parameters(generator), count_parameters(discriminator), "\n")
+generator_a = Unet()
+generator_b = Unet()
+
+discriminator_a = PatchDiscriminator(1)
+discriminator_b = PatchDiscriminator(1)
 
 if cuda:
-    generator = generator.cuda()
-    discriminator = discriminator.cuda()
+    generator_a = generator_a.cuda()
+    generator_b = generator_b.cuda()
+    discriminator_a = discriminator_a.cuda()
+    discriminator_b = discriminator_b.cuda()
     criterion_GAN.cuda()
     criterion_pixelwise.cuda()
 
-if opt.epoch != 0:
+""" if opt.epoch != 0:
     # Load pretrained models
-    generator.load_state_dict(torch.load("saved_models/%s/generator_%d.pth" % (opt.dataset_name, opt.epoch)))
+    generator_a.load_state_dict(torch.load("saved_models/%s/generator_%d.pth" % (opt.dataset_name, opt.epoch)))
+    generator_b.load_state_dict(torch.load("saved_models/%s/generator_%d.pth" % (opt.dataset_name, opt.epoch)))
     discriminator.load_state_dict(torch.load("saved_models/%s/discriminator_%d.pth" % (opt.dataset_name, opt.epoch)))
-else:
+    discriminator.load_state_dict(torch.load("saved_models/%s/discriminator_%d.pth" % (opt.dataset_name, opt.epoch)))
+else: """
     # Initialize weights
-    generator.apply(weights_init_normal)
-    discriminator.apply(weights_init_normal)
+generator_a.apply(weights_init_normal)
+generator_b.apply(weights_init_normal)
+discriminator_a.apply(weights_init_normal)
+discriminator_b.apply(weights_init_normal)
 
 # Optimizers
-optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_G = torch.optim.Adam(
+    itertools.chain(generator_a.parameters(), generator_b.parameters()), lr=opt.lr, betas=(opt.b1, opt.b2)
+)
+optimizer_D_a = torch.optim.Adam(discriminator_a.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+optimizer_D_b = torch.optim.Adam(discriminator_a.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 
 # Configure dataloaders
 transforms_ = [
@@ -102,7 +111,7 @@ transforms_ = [
 ]
 val_transforms_ = [
     transforms.ToTensor(),
-    transforms.Resize((opt.img_height, opt.img_width), Image.BICUBIC),
+    transforms.Resize((opt.img_height, opt.img_width), Image.BICUBIC)
     #transforms.Normalize((0.5), (0.5)),
 ]
 
@@ -110,8 +119,8 @@ paths = glob.glob("PyTorch-GAN/data/COCO/test2017/test2017" + "/*.jpg") # Grabbi
 print("Images in COCO:",len(paths))
 paths_subset = np.random.choice(paths, 10000, replace=False) # choosing 10000 images randomly
 rand_idxs = np.random.permutation(10000)
-train_idxs = rand_idxs[:4000] # choosing the first 8000 as training set
-val_idxs = rand_idxs[4000:5000] # choosing last 2000 as validation set
+train_idxs = rand_idxs[:5000] # choosing the first 8000 as training set
+val_idxs = rand_idxs[5000:6500] # choosing last 2000 as validation set
 train_paths = paths_subset[train_idxs]
 val_paths = paths_subset[val_idxs]
 print("train:",len(train_paths),"val:",len(val_paths))
@@ -133,14 +142,18 @@ val_dataloader = DataLoader(
 # Tensor type
 Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-def lab_to_rgb(L, ab):
+def lab_to_rgb(L, a,b):
     """
     Takes a batch of images
     """
-    
+    #ab = torch.cat((a,b),1)
+    #print("\nab:",ab.shape)
     L = (L + 1.) * 50.
-    ab = ab * 110.
-    Lab = torch.cat([L, ab], dim=1).permute(0, 2, 3, 1).cpu().numpy()
+    a = a * 110.
+    b = b * 110.
+    #print("\nL:",L.shape, "\n")
+    Lab = torch.cat([L, a, b], dim=1).permute(0, 2, 3, 1).cpu().numpy()
+    #print("\nlab:",Lab.shape, "\n")
     rgb_imgs = []
     for img in Lab:
         #img_rgb=cv2.cvtColor(img, cv2.COLOR_LAB2RGB)
@@ -152,12 +165,14 @@ def sample_images(batches_done,save=True):
     """Saves a generated sample from the validation set"""
     imgs = next(iter(val_dataloader))
     input = Variable(imgs["L"].type(Tensor))
-    real_C = Variable(imgs["ab"].type(Tensor))
-    z = Variable(Tensor(np.random.normal(0, 1, (input.shape[0], 100))))
-    fake_C = generator(z).detach()
+    real_a = Variable(imgs["a"].type(Tensor))
+    real_b = Variable(imgs["b"].type(Tensor))
     
-    real_imgs = lab_to_rgb(input,real_C)
-    fake_imgs = lab_to_rgb(input,fake_C)
+    fake_C_a = generator_a(input).detach()
+    fake_C_b = generator_b(input).detach()
+
+    real_imgs = lab_to_rgb(input,real_a,real_b)
+    fake_imgs = lab_to_rgb(input,fake_C_a,fake_C_b)
     fig = plt.figure(figsize=(30, 16))
     for i in range(5):
         ax = plt.subplot(3, 5, i + 1)
@@ -187,15 +202,19 @@ for epoch in range(opt.epoch, opt.n_epochs):
     torch.cuda.empty_cache()
     for i, batch in enumerate(dataloader):
         # Model inputs
-        real_C = Variable(batch["ab"].type(Tensor))
+        real_a = Variable(batch["a"].type(Tensor))
+        real_b = Variable(batch["b"].type(Tensor))
+        # real_a = real_C[[0,1],...]
+        # real_b = real_C[[0,2],...]
         input =Variable(batch["L"].type(Tensor))
+        #print(("\nreal a:",real_a.shape), ('real b: ',real_b.shape), "\n")
 
         # Adversarial ground truths
-        #valid = Variable(Tensor(np.ones((real_C.size(0), *patch))*0.9), requires_grad=False)
-        #fake = Variable(Tensor(np.zeros((real_C.size(0), *patch))), requires_grad=False)
-        valid = Variable(Tensor(real_C.shape[0], 1).fill_(0.9), requires_grad=False)
+        valid = Variable(Tensor(np.ones((real_a.size(0), *patch))*0.9), requires_grad=False)
+        fake = Variable(Tensor(np.zeros((real_a.size(0), *patch))), requires_grad=False)
+        """ valid = Variable(Tensor(real_C.shape[0], 1).fill_(0.9), requires_grad=False)
         fake = Variable(Tensor(real_C.shape[0], 1).fill_(0.0), requires_grad=False)
-
+ """
         # ------------------
         #  Train Generators
         # ------------------
@@ -204,15 +223,18 @@ for epoch in range(opt.epoch, opt.n_epochs):
 
         # GAN loss
         #generate noise
-        z = Variable(Tensor(np.random.normal(0, 1, (input.shape[0], 100))))
+        #z = Variable(Tensor(np.random.normal(0, 1, (input.shape[0], 100))))
 
-        fake_C = generator(z)
-        fake_image = torch.cat([input,fake_C],dim=1)
-        pred_fake = discriminator(fake_image)
-        loss_GAN = criterion_GAN(pred_fake, valid)
+        fake_a = generator_a(input)
+        fake_b = generator_b(input)
+        #fake_image = torch.cat([input,fake_C],dim=1)
+        pred_fake_a = discriminator_a(fake_a)
+        pred_fake_b = discriminator_b(fake_b)
+        
+
+        loss_GAN= criterion_GAN(pred_fake_a, valid) + criterion_GAN(pred_fake_b, valid)
         # Pixel-wise loss
-        loss_pixel = criterion_pixelwise(fake_C, real_C)
-
+        loss_pixel = criterion_pixelwise(fake_a, real_a) + criterion_pixelwise(fake_b, real_b)
         # Total loss
         loss_G = loss_GAN + lambda_pixel * loss_pixel
 
@@ -224,12 +246,15 @@ for epoch in range(opt.epoch, opt.n_epochs):
         #  Train Discriminator
         # ---------------------
 
-        optimizer_D.zero_grad()
+        optimizer_D_a.zero_grad()
+        optimizer_D_b.zero_grad()
 
         # Real loss
-        real_image = torch.cat([input,real_C],dim=1)
-        pred_real = discriminator(real_image)
-        loss_real = criterion_GAN(pred_real, valid)
+        #real_image = torch.cat([input,real_C],dim=1)
+        pred_real_a = discriminator_a(real_a)
+        pred_real_b = discriminator_b(real_b)
+        loss_real_a = criterion_GAN(pred_real_a, valid)
+        loss_real_b = criterion_GAN(pred_real_b, valid)
 
 
 ####Experience replay with 20% chance##########
@@ -250,14 +275,19 @@ for epoch in range(opt.epoch, opt.n_epochs):
         #         if len(replay_buffer) < 300:
         #             replay_buffer.append(fake_image.detach().cpu())
         #     loss_D =  (loss_real + loss_fake) / 2
-        fake_image = torch.cat([input,fake_C],dim=1)
-        pred_fake = discriminator(fake_image.detach())
-        loss_fake = criterion_GAN(pred_fake, fake)
-        loss_D =  (loss_real + loss_fake) / 2
+        #fake_image = torch.cat([input,fake_C],dim=1)
+        pred_fake_a = discriminator_a(fake_a).detach()
+        pred_fake_b = discriminator_b(fake_b).detach()
+        loss_fake_a = criterion_GAN(pred_fake_a, fake)
+        loss_fake_b = criterion_GAN(pred_fake_b, fake)
+        loss_D_a =  (loss_real_a + loss_fake_a) / 2
+        loss_D_b =  (loss_real_b + loss_fake_b) / 2
         # Total loss
+        loss_D = loss_D_a + loss_D_b
 
         loss_D.backward()
-        optimizer_D.step()
+        optimizer_D_a.step()
+        optimizer_D_b.step()
 
         # --------------
         #  Log Progress
@@ -271,13 +301,14 @@ for epoch in range(opt.epoch, opt.n_epochs):
 
         # Print log
         sys.stdout.write(
-            "\r[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f, pixel: %f, adv: %f] ETA: %s"
+            "\r[Epoch %d/%d] [Batch %d/%d] [D loss a: %f] [D loss b: %f] [G loss: %f, pixel: %f, adv_a: %f] ETA: %s"
             % (
                 epoch,
                 opt.n_epochs,
                 i,
                 len(dataloader),
-                loss_D.item(),
+                loss_D_a.item(),
+                loss_D_b.item(),
                 loss_G.item(),
                 loss_pixel.item(),
                 loss_GAN.item(),
@@ -291,5 +322,6 @@ for epoch in range(opt.epoch, opt.n_epochs):
 
     #if opt.checkpoint_interval != -1 and epoch % opt.checkpoint_interval == 0:
         # Save model checkpoints
-torch.save(generator.state_dict(), "saved_models/%s/generator_%d.pth" % (opt.dataset_name, epoch))
-torch.save(discriminator.state_dict(), "saved_models/%s/discriminator_%d.pth" % (opt.dataset_name, epoch))
+torch.save(generator_a.state_dict(), "saved_models/%s/generator_a_%d.pth" % (opt.dataset_name, epoch))
+torch.save(generator_b.state_dict(), "saved_models/%s/generator_b_%d.pth" % (opt.dataset_name, epoch))
+torch.save(discriminator_a.state_dict(), "saved_models/%s/discriminator_%d.pth" % (opt.dataset_name, epoch))
